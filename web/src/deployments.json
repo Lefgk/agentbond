@@ -1,0 +1,17 @@
+{
+  "1": {
+    "agentBond": "",
+    "usdc": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    "registry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"
+  },
+  "8453": {
+    "agentBond": "",
+    "usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "registry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"
+  },
+  "31337": {
+    "agentBond": "",
+    "usdc": "",
+    "registry": ""
+  }
+}
