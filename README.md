@@ -48,3 +48,7 @@ make test-fork-deploy
 - Fee-on-transfer tokens are unsupported. USDC is fine.
 - USDC blocklisting: if Circle blocks the contract or a recipient, those transfers revert.
 - The web app reads claim and slash data from the contract, not from an indexer.
+
+## Contact
+
+Support and questions: [lg.playstudio@gmail.com](mailto:lg.playstudio@gmail.com)
