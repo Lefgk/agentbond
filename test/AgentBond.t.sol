@@ -13,6 +13,7 @@ contract AgentBondTest is Test {
 
     uint64 internal constant COOLDOWN = 7 days;
     uint64 internal constant TIMEOUT = 14 days;
+    uint256 internal constant CLAIM_DEP = 1e6;
 
     address internal operator = makeAddr("operator");
     address internal wallet = makeAddr("wallet");
@@ -26,7 +27,7 @@ contract AgentBondTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
         registry = new MockIdentityRegistry();
-        bond = new AgentBond(address(usdc), address(registry), COOLDOWN, TIMEOUT);
+        bond = new AgentBond(address(usdc), address(registry), COOLDOWN, TIMEOUT, CLAIM_DEP);
 
         agentId = registry.register(operator, "ipfs://agent");
         usdc.mint(operator, 1_000_000e6);
@@ -35,6 +36,8 @@ contract AgentBondTest is Test {
         vm.prank(operator);
         usdc.approve(address(bond), type(uint256).max);
         vm.prank(stranger);
+        usdc.approve(address(bond), type(uint256).max);
+        vm.prank(claimant);
         usdc.approve(address(bond), type(uint256).max);
     }
 
@@ -113,7 +116,7 @@ contract AgentBondTest is Test {
     }
 
     function test_depositForAgent_registryUnsetReverts() public {
-        AgentBond noReg = new AgentBond(address(usdc), address(0), COOLDOWN, TIMEOUT);
+        AgentBond noReg = new AgentBond(address(usdc), address(0), COOLDOWN, TIMEOUT, CLAIM_DEP);
         vm.prank(operator);
         usdc.approve(address(noReg), type(uint256).max);
         vm.prank(operator);
@@ -131,9 +134,13 @@ contract AgentBondTest is Test {
         bytes32 key = _agentKey();
         vm.prank(operator);
         registry.setAgentWallet(agentId, wallet);
+        // audit M-1: the agent wallet (a hot key) can no longer change the arbiter; it can still withdraw-manage
         vm.prank(wallet);
+        vm.expectRevert(AgentBond.NotOwner.selector);
         bond.setArbiter(key, otherArb);
-        assertEq(bond.coverageOfAgent(agentId).arbiter, otherArb);
+        vm.prank(wallet);
+        bond.requestWithdraw(key, 1e6);
+        assertEq(bond.coverageOfAgent(agentId).pendingWithdraw, 1e6);
     }
 
     function test_afterTransfer_newOwnerControlsAndWalletCleared() public {
@@ -163,7 +170,7 @@ contract AgentBondTest is Test {
         _depositAgent(10e6);
         bytes32 key = _agentKey();
         vm.prank(stranger);
-        vm.expectRevert(AgentBond.NotController.selector);
+        vm.expectRevert(AgentBond.NotOwner.selector);
         bond.setArbiter(key, otherArb);
         vm.prank(stranger);
         vm.expectRevert(AgentBond.NotController.selector);
@@ -173,11 +180,14 @@ contract AgentBondTest is Test {
     function test_setArbiterBlockedWhenOpenClaims() public {
         _depositAgent(10e6);
         bytes32 key = _agentKey();
+        vm.prank(operator);
+        bond.setArbiter(key, otherArb);
         vm.prank(claimant);
         bond.fileClaim(key, 1e6, "ipfs://ev");
+        vm.warp(block.timestamp + COOLDOWN);
         vm.prank(operator);
         vm.expectRevert(AgentBond.OpenClaims.selector);
-        bond.setArbiter(key, otherArb);
+        bond.applyArbiter(key);
     }
 
     // --- claims and slashes ---
@@ -225,7 +235,7 @@ contract AgentBondTest is Test {
         vm.prank(arbiter);
         bond.resolveClaim(id, 0, keccak256("no"));
         AgentBond.Coverage memory c = bond.coverageOfAgent(agentId);
-        assertEq(c.amount, 50e6);
+        assertEq(c.amount, 50e6 + CLAIM_DEP); // forfeited claim deposit joins the bond
         assertEq(c.totalSlashed, 0);
         assertEq(uint256(bond.getClaim(id).status), uint256(AgentBond.ClaimStatus.Rejected));
         assertEq(bond.slashHistoryOfAgent(agentId).length, 0);
@@ -246,8 +256,8 @@ contract AgentBondTest is Test {
         vm.prank(claimant);
         uint256 id2 = bond.fileClaim(key, 50e6, "ipfs://big");
         vm.prank(arbiter);
-        vm.expectRevert(abi.encodeWithSelector(AgentBond.ExceedsBond.selector, 11e6, 10e6));
-        bond.resolveClaim(id2, 11e6, bytes32(0));
+        vm.expectRevert(abi.encodeWithSelector(AgentBond.ExceedsBond.selector, 11e6 + CLAIM_DEP, 10e6 + CLAIM_DEP));
+        bond.resolveClaim(id2, 11e6 + CLAIM_DEP, bytes32(0)); // remaining = 10e6 + forfeited deposit
     }
 
     function test_fileClaimValidations() public {
@@ -370,11 +380,11 @@ contract AgentBondTest is Test {
 
     function test_constructorGuards() public {
         vm.expectRevert(AgentBond.ZeroAddress.selector);
-        new AgentBond(address(0), address(registry), COOLDOWN, TIMEOUT);
+        new AgentBond(address(0), address(registry), COOLDOWN, TIMEOUT, CLAIM_DEP);
         vm.expectRevert(AgentBond.InvalidAmount.selector);
-        new AgentBond(address(usdc), address(registry), 0, TIMEOUT);
+        new AgentBond(address(usdc), address(registry), 0, TIMEOUT, CLAIM_DEP);
         vm.expectRevert(AgentBond.InvalidAmount.selector);
-        new AgentBond(address(usdc), address(registry), COOLDOWN, 0);
+        new AgentBond(address(usdc), address(registry), COOLDOWN, 0, CLAIM_DEP);
     }
 
     // --- fuzz ---
@@ -396,16 +406,23 @@ contract AgentBondTest is Test {
             bond.resolveClaim(id, slashAmount, keccak256("f"));
             assertEq(bond.coverageOfAgent(agentId).amount, deposit);
             assertEq(bond.coverageOfAgent(agentId).totalSlashed, 0);
-            assertEq(usdc.balanceOf(address(bond)), deposit);
+            assertEq(usdc.balanceOf(address(bond)), deposit + CLAIM_DEP);
         } else {
             vm.prank(arbiter);
             bond.resolveClaim(id, slashAmount, keccak256("f"));
             AgentBond.Coverage memory c = bond.coverageOfAgent(agentId);
-            assertEq(c.amount, deposit - slashAmount);
             assertEq(c.totalSlashed, slashAmount);
             assertLe(c.totalSlashed, c.totalDeposited);
-            assertEq(usdc.balanceOf(address(bond)), deposit - slashAmount);
-            assertEq(usdc.balanceOf(claimant), 100e6 + slashAmount);
+            if (slashAmount == 0) {
+                // rejection: the claim deposit is added to the bond
+                assertEq(c.amount, deposit + CLAIM_DEP);
+                assertEq(usdc.balanceOf(address(bond)), deposit + CLAIM_DEP);
+                assertEq(usdc.balanceOf(claimant), 100e6 - CLAIM_DEP);
+            } else {
+                assertEq(c.amount, deposit - slashAmount);
+                assertEq(usdc.balanceOf(address(bond)), deposit - slashAmount);
+                assertEq(usdc.balanceOf(claimant), 100e6 + slashAmount);
+            }
         }
     }
 

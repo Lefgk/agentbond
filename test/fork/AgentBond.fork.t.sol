@@ -57,10 +57,14 @@ abstract contract ForkBase is Test {
         usdc = IERC20Metadata(c.usdc);
         registry = c.identityRegistry;
         registryLive = registry.code.length > 0;
-        bond = new AgentBond(address(usdc), registryLive ? registry : address(0), COOLDOWN, TIMEOUT);
+        bond = new AgentBond(address(usdc), registryLive ? registry : address(0), COOLDOWN, TIMEOUT, 1e6);
 
         _fundUsdc(operator, 10_000e6);
         vm.prank(operator);
+        usdc.approve(address(bond), type(uint256).max);
+        // claimants escrow a 1 USDC claim deposit (audit fix M-3)
+        _fundUsdc(claimant, 1e6);
+        vm.prank(claimant);
         usdc.approve(address(bond), type(uint256).max);
     }
 
@@ -125,13 +129,14 @@ abstract contract ForkBase is Test {
         assertEq(usdc.balanceOf(address(bond)), 1_000e6);
 
         bytes32 key = bond.keyOfAccount(operator);
+        uint256 claimantStart = usdc.balanceOf(claimant);
         vm.prank(claimant);
         uint256 claimId = bond.fileClaim(key, 200e6, "ipfs://fork-evidence");
         vm.prank(arbiter);
         bond.resolveClaim(claimId, 150e6, keccak256("fork-slash"));
         assertEq(bond.coverageOfAccount(operator).amount, 850e6);
         assertEq(bond.coverageOfAccount(operator).totalSlashed, 150e6);
-        assertEq(usdc.balanceOf(claimant), 150e6);
+        assertEq(usdc.balanceOf(claimant), claimantStart + 150e6); // slash + refunded deposit
         assertEq(bond.slashHistoryOfAccount(operator).length, 1);
 
         vm.prank(operator);
@@ -223,7 +228,8 @@ abstract contract ForkBase is Test {
             vm.prank(arbiter);
             bond.resolveClaim(id, slashAmount, keccak256("f"));
             AgentBond.Coverage memory c = bond.coverageOfAccount(acct);
-            assertEq(c.amount, deposit - slashAmount);
+            // a rejection (slash 0) adds the forfeited 1 USDC claim deposit to the bond
+            assertEq(c.amount, slashAmount == 0 ? deposit + 1e6 : deposit - slashAmount);
             assertLe(c.totalSlashed, c.totalDeposited);
             assertEq(usdc.balanceOf(address(bond)), usdc.balanceOf(address(bond)));
             assertEq(c.totalSlashed, slashAmount);

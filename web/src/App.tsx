@@ -360,6 +360,30 @@ function BondPage({
   const [slashAmt, setSlashAmt] = useState("0");
   const [reason, setReason] = useState("");
   const [withdrawAmt, setWithdrawAmt] = useState("");
+  const { data: claimDeposit } = useReadContract({
+    address: agentBond,
+    abi: agentBondAbi,
+    functionName: "claimDeposit",
+  });
+
+  const fileClaim = async () => {
+    const dep = (claimDeposit as bigint | undefined) ?? 0n;
+    if (
+      dep > 0n &&
+      !(await run(`Approve ${formatUnits(dep, 6)} USDC claim deposit`, () =>
+        writeContractAsync({ address: usdc, abi: erc20Abi, functionName: "approve", args: [agentBond, dep] }),
+      ))
+    )
+      return;
+    await run("File claim", () =>
+      writeContractAsync({
+        address: agentBond,
+        abi: agentBondAbi,
+        functionName: "fileClaim",
+        args: [key!, parseUnits(claimAmt, 6), evidence],
+      }),
+    );
+  };
 
   const identArgs = useMemo(() => {
     if (agentId !== undefined) return { mode: "agent" as const, id: agentId };
@@ -392,8 +416,10 @@ function BondPage({
     <div className="card">
       <h2>Bond</h2>
       <div className="muted">
-        Uses the identity in the explorer box above. First deposit must name an arbiter. Anyone may
-        top up.
+        Uses the identity in the explorer box above. Only the agent's owner (or the account itself)
+        can create a bond and name its arbiter; anyone may top up. Arbiter changes wait 7 days.
+        Filing a claim escrows a small USDC deposit: refunded on a slash or expiry, added to the bond
+        if the claim is rejected or cancelled.
       </div>
       <div className="row">
         <label>
@@ -417,7 +443,7 @@ function BondPage({
           className="ghost"
           disabled={!key || !arbiter}
           onClick={() =>
-            run("Set arbiter", () =>
+            run("Queue arbiter change", () =>
               writeContractAsync({
                 address: agentBond,
                 abi: agentBondAbi,
@@ -427,7 +453,23 @@ function BondPage({
             )
           }
         >
-          Rotate arbiter
+          Queue arbiter change
+        </button>
+        <button
+          className="ghost"
+          disabled={!key}
+          onClick={() =>
+            run("Apply arbiter", () =>
+              writeContractAsync({
+                address: agentBond,
+                abi: agentBondAbi,
+                functionName: "applyArbiter",
+                args: [key!],
+              }),
+            )
+          }
+        >
+          Apply arbiter (after 7 days)
         </button>
         <label>
           Withdraw amount (USDC)
@@ -494,18 +536,9 @@ function BondPage({
         </label>
         <button
           disabled={!key}
-          onClick={() =>
-            run("File claim", () =>
-              writeContractAsync({
-                address: agentBond,
-                abi: agentBondAbi,
-                functionName: "fileClaim",
-                args: [key!, parseUnits(claimAmt, 6), evidence],
-              }),
-            )
-          }
+          onClick={fileClaim}
         >
-          File claim
+          Approve deposit + file claim
         </button>
       </div>
       <div className="row">

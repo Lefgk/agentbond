@@ -86,6 +86,9 @@ contract AgentBond is ReentrancyGuard {
     address public immutable identityRegistry; // address(0) = address-keyed bonds only
     uint64 public immutable withdrawCooldown;
     uint64 public immutable claimTimeout;
+    /// @notice USDC a claimant escrows per claim (audit fix M-3). Refunded on a slash or an expiry,
+    ///         added to the bond on a rejection or a cancel. 0 disables it.
+    uint256 public immutable claimDeposit;
     uint256 public constant MAX_URI_LENGTH = 512;
 
     // --- state ---
@@ -95,6 +98,18 @@ contract AgentBond is ReentrancyGuard {
     mapping(bytes32 => uint256[]) internal _claimIds;
     mapping(uint256 => Claim) internal _claims;
     uint256 public claimCount;
+
+    struct PendingArbiter {
+        address arbiter;
+        uint64 availableAt;
+    }
+
+    /// @notice Queued arbiter change per bond (audit fix M-1). Takes effect after `withdrawCooldown`.
+    mapping(bytes32 => PendingArbiter) public pendingArbiter;
+    /// @notice Claim deposit escrowed for each claim id (0 once settled).
+    mapping(uint256 => uint256) public claimDepositOf;
+    /// @notice Sum of claim deposits currently escrowed for pending claims.
+    uint256 public heldClaimDeposits;
 
     // --- errors ---
 
@@ -121,11 +136,16 @@ contract AgentBond is ReentrancyGuard {
     error ExceedsBond(uint256 slashAmount, uint256 remaining);
     error ControllerCannotClaim();
     error ArbiterCannotClaim();
+    error NotOwner();
+    error NoPendingArbiter();
+    error ArbiterCooldownActive();
 
     // --- events ---
 
     event BondDeposited(bytes32 indexed bondKey, address indexed from, uint256 amount, uint256 newCoverage);
     event ArbiterSet(bytes32 indexed bondKey, address indexed oldArbiter, address indexed newArbiter);
+    event ArbiterChangeRequested(bytes32 indexed bondKey, address indexed newArbiter, uint64 availableAt);
+    event ArbiterChangeCancelled(bytes32 indexed bondKey);
     event WithdrawRequested(bytes32 indexed bondKey, uint256 amount, uint64 availableAt);
     event WithdrawCancelled(bytes32 indexed bondKey);
     event Withdrawn(bytes32 indexed bondKey, address indexed to, uint256 amount);
@@ -141,13 +161,20 @@ contract AgentBond is ReentrancyGuard {
         bytes32 indexed bondKey, uint256 indexed claimId, address indexed claimant, uint256 amount, bytes32 reasonHash
     );
 
-    constructor(address usdc_, address identityRegistry_, uint64 withdrawCooldown_, uint64 claimTimeout_) {
+    constructor(
+        address usdc_,
+        address identityRegistry_,
+        uint64 withdrawCooldown_,
+        uint64 claimTimeout_,
+        uint256 claimDeposit_
+    ) {
         if (usdc_ == address(0)) revert ZeroAddress();
         if (withdrawCooldown_ == 0 || claimTimeout_ == 0) revert InvalidAmount();
         usdc = IERC20(usdc_);
         identityRegistry = identityRegistry_;
         withdrawCooldown = withdrawCooldown_;
         claimTimeout = claimTimeout_;
+        claimDeposit = claimDeposit_;
     }
 
     // --- keys ---
@@ -179,14 +206,37 @@ contract AgentBond is ReentrancyGuard {
 
     // --- arbiter ---
 
+    /// @notice Owner-only. Queues an arbiter change that `applyArbiter` can finalize after
+    ///         `withdrawCooldown` (audit fix M-1: an instant swap let the operator slash the whole
+    ///         bond to itself through a puppet arbiter, skipping the withdraw cooldown).
+    ///         Passing the current arbiter cancels a queued change.
     function setArbiter(bytes32 key, address newArbiter) external {
         Bond storage b = _needBond(key);
-        if (!_isController(b, msg.sender)) revert NotController();
-        if (b.openClaims != 0) revert OpenClaims();
+        if (!_isOwner(b, msg.sender)) revert NotOwner();
         if (newArbiter == address(0)) revert ZeroAddress();
+        if (newArbiter == b.arbiter) {
+            if (pendingArbiter[key].availableAt == 0) revert NoPendingArbiter();
+            delete pendingArbiter[key];
+            emit ArbiterChangeCancelled(key);
+            return;
+        }
+        uint64 at = uint64(block.timestamp) + withdrawCooldown;
+        pendingArbiter[key] = PendingArbiter(newArbiter, at);
+        emit ArbiterChangeRequested(key, newArbiter, at);
+    }
+
+    /// @notice Owner-only. Finalizes a queued arbiter change once its delay passed and no claims are open.
+    function applyArbiter(bytes32 key) external {
+        Bond storage b = _needBond(key);
+        if (!_isOwner(b, msg.sender)) revert NotOwner();
+        PendingArbiter memory p = pendingArbiter[key];
+        if (p.availableAt == 0) revert NoPendingArbiter();
+        if (block.timestamp < p.availableAt) revert ArbiterCooldownActive();
+        if (b.openClaims != 0) revert OpenClaims();
+        delete pendingArbiter[key];
         address old = b.arbiter;
-        b.arbiter = newArbiter;
-        emit ArbiterSet(key, old, newArbiter);
+        b.arbiter = p.arbiter;
+        emit ArbiterSet(key, old, p.arbiter);
     }
 
     // --- withdrawals ---
@@ -232,7 +282,11 @@ contract AgentBond is ReentrancyGuard {
 
     // --- claims and slashing ---
 
-    function fileClaim(bytes32 key, uint256 amount, string calldata evidenceURI) external returns (uint256 claimId) {
+    function fileClaim(bytes32 key, uint256 amount, string calldata evidenceURI)
+        external
+        nonReentrant
+        returns (uint256 claimId)
+    {
         Bond storage b = _needBond(key);
         if (b.amount == 0) revert EmptyBond();
         if (amount == 0) revert ZeroAmount();
@@ -254,6 +308,12 @@ contract AgentBond is ReentrancyGuard {
         });
         _claimIds[key].push(claimId);
         b.openClaims += 1;
+        uint256 dep = claimDeposit;
+        if (dep != 0) {
+            claimDepositOf[claimId] = dep;
+            heldClaimDeposits += dep;
+            usdc.safeTransferFrom(msg.sender, address(this), dep);
+        }
         emit ClaimFiled(claimId, key, msg.sender, amount, evidenceURI);
     }
 
@@ -269,9 +329,11 @@ contract AgentBond is ReentrancyGuard {
         b.openClaims -= 1;
         c.slashed = slashAmount;
         c.reasonHash = reasonHash;
+        uint256 dep = _releaseDeposit(claimId);
 
         if (slashAmount == 0) {
             c.status = ClaimStatus.Rejected;
+            _forfeitToBond(c.bondKey, b, c.claimant, dep);
         } else {
             c.status = ClaimStatus.Slashed;
             b.amount -= slashAmount;
@@ -286,7 +348,7 @@ contract AgentBond is ReentrancyGuard {
                     timestamp: uint64(block.timestamp)
                 })
             );
-            usdc.safeTransfer(c.claimant, slashAmount);
+            usdc.safeTransfer(c.claimant, slashAmount + dep);
             emit Slashed(c.bondKey, claimId, c.claimant, slashAmount, reasonHash);
         }
         emit ClaimResolved(claimId, c.bondKey, slashAmount, reasonHash, c.status);
@@ -295,17 +357,21 @@ contract AgentBond is ReentrancyGuard {
     function cancelClaim(uint256 claimId) external {
         Claim storage c = _needPending(claimId);
         if (msg.sender != c.claimant) revert NotClaimant();
-        _bonds[c.bondKey].openClaims -= 1;
+        Bond storage b = _bonds[c.bondKey];
+        b.openClaims -= 1;
         c.status = ClaimStatus.Cancelled;
+        _forfeitToBond(c.bondKey, b, c.claimant, _releaseDeposit(claimId));
         emit ClaimCancelled(claimId, c.bondKey);
     }
 
     /// @notice Anyone may expire a pending claim after `claimTimeout`, unblocking withdrawals.
-    function expireClaim(uint256 claimId) external {
+    function expireClaim(uint256 claimId) external nonReentrant {
         Claim storage c = _needPending(claimId);
         if (block.timestamp < uint256(c.filedAt) + claimTimeout) revert ClaimNotExpired();
         _bonds[c.bondKey].openClaims -= 1;
         c.status = ClaimStatus.Expired;
+        uint256 dep = _releaseDeposit(claimId);
+        if (dep != 0) usdc.safeTransfer(c.claimant, dep);
         emit ClaimExpired(claimId, c.bondKey);
     }
 
@@ -392,6 +458,8 @@ contract AgentBond is ReentrancyGuard {
             b.kind = kind;
             b.agentId = agentId;
             b.account = account;
+            // Audit fix M-2: only the bond's controller may create it and name its arbiter.
+            if (!_isController(b, msg.sender)) revert NotController();
             b.arbiter = arbiter;
             emit ArbiterSet(key, address(0), arbiter);
         } else if (arbiter != address(0) && arbiter != b.arbiter) {
@@ -401,6 +469,30 @@ contract AgentBond is ReentrancyGuard {
         b.amount += amount;
         b.totalDeposited += amount;
         emit BondDeposited(key, msg.sender, amount, b.amount);
+    }
+
+    function _releaseDeposit(uint256 claimId) internal returns (uint256 dep) {
+        dep = claimDepositOf[claimId];
+        if (dep != 0) {
+            claimDepositOf[claimId] = 0;
+            heldClaimDeposits -= dep;
+        }
+    }
+
+    function _forfeitToBond(bytes32 key, Bond storage b, address from, uint256 dep) internal {
+        if (dep == 0) return;
+        b.amount += dep;
+        b.totalDeposited += dep;
+        emit BondDeposited(key, from, dep, b.amount);
+    }
+
+    function _isOwner(Bond storage b, address who) internal view returns (bool) {
+        if (b.kind == Kind.Account) return who == b.account;
+        try IIdentityRegistry(identityRegistry).ownerOf(b.agentId) returns (address owner) {
+            return who == owner;
+        } catch {
+            return false;
+        }
     }
 
     function _needBond(bytes32 key) internal view returns (Bond storage b) {

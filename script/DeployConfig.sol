@@ -21,6 +21,8 @@ library DeployConfig {
 
     uint64 internal constant WITHDRAW_COOLDOWN = 7 days;
     uint64 internal constant CLAIM_TIMEOUT = 14 days;
+    /// @notice Per-claim anti-spam deposit (1 USDC). Audit fix M-3.
+    uint256 internal constant CLAIM_DEPOSIT = 1e6;
 
     function get(uint256 chainId) internal pure returns (Chain memory) {
         if (chainId == ETHEREUM) return Chain("Ethereum mainnet", true, USDC_ETHEREUM, IDENTITY_REGISTRY);

@@ -18,6 +18,7 @@ contract DeployConfigTest is Test {
         assertTrue(b.isMainnet);
         assertEq(DeployConfig.WITHDRAW_COOLDOWN, 7 days);
         assertEq(DeployConfig.CLAIM_TIMEOUT, 14 days);
+        assertEq(DeployConfig.CLAIM_DEPOSIT, 1e6);
     }
 
     function test_anvilConfigIsNotMainnet() public pure {

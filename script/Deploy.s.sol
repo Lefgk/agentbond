@@ -57,7 +57,9 @@ contract Deploy is Script {
             usdc = address(new MockUSDC());
             registry = address(new MockIdentityRegistry());
         }
-        agentBond = new AgentBond(usdc, registry, DeployConfig.WITHDRAW_COOLDOWN, DeployConfig.CLAIM_TIMEOUT);
+        agentBond = new AgentBond(
+            usdc, registry, DeployConfig.WITHDRAW_COOLDOWN, DeployConfig.CLAIM_TIMEOUT, DeployConfig.CLAIM_DEPOSIT
+        );
         vm.stopBroadcast();
 
         console2.log("AgentBond", address(agentBond));
@@ -65,6 +67,7 @@ contract Deploy is Script {
         console2.log("IdentityRegistry", registry);
         console2.log("withdrawCooldown", DeployConfig.WITHDRAW_COOLDOWN);
         console2.log("claimTimeout", DeployConfig.CLAIM_TIMEOUT);
+        console2.log("claimDeposit", DeployConfig.CLAIM_DEPOSIT);
 
         if (broadcasting) {
             _writeWebConfig(address(agentBond), usdc, registry);

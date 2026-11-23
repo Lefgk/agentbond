@@ -51,6 +51,7 @@ abstract contract DeployForkBase is Test {
         assertEq(agentBond.identityRegistry(), registry);
         assertEq(agentBond.withdrawCooldown(), DeployConfig.WITHDRAW_COOLDOWN);
         assertEq(agentBond.claimTimeout(), DeployConfig.CLAIM_TIMEOUT);
+        assertEq(agentBond.claimDeposit(), DeployConfig.CLAIM_DEPOSIT);
     }
 
     function test_fork_deployScript_confirmMainnetNotSetIsDryRunSafe() public onFork {

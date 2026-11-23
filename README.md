@@ -20,9 +20,9 @@ See [SPEC.md](SPEC.md) for the problem, competitors and choices, and [DEPLOY.md]
 | `web/` | Vite + React + wagmi/viem explorer and bond page |
 
 ## How it works
-1. **Deposit.** `depositForAgent(agentId, arbiter, amount)` or `depositForAccount(account, arbiter, amount)`. First deposit names the arbiter; anyone may top up.
+1. **Deposit.** `depositForAgent(agentId, arbiter, amount)` or `depositForAccount(account, arbiter, amount)`. Only the controller (8004 owner/agent wallet, or the account itself) can make the first deposit, which names the arbiter; anyone may top up after that. The 8004 owner (not the agent wallet) changes the arbiter with `setArbiter` (queues it) and `applyArbiter` after 7 days with no open claims.
 2. **Look up.** `coverageOfAgent` / `coverageOfAccount` returns remaining coverage, arbiter, operator, open claims and totals. `slashHistory*` returns every slash.
-3. **Claim.** A non-controller files `fileClaim` with an evidence URI. The arbiter calls `resolveClaim(id, slashAmount, reasonHash)` — `0` rejects, anything else pays the claimant and cannot exceed the request or the remaining bond.
+3. **Claim.** A non-controller files `fileClaim` with an evidence URI and escrows a 1 USDC claim deposit (refunded on a slash or expiry; added to the bond on a rejection or cancel). The arbiter calls `resolveClaim(id, slashAmount, reasonHash)` — `0` rejects, anything else pays the claimant and cannot exceed the request or the remaining bond.
 4. **Withdraw.** The 8004 owner (or agent wallet) / the account calls `requestWithdraw`, waits 7 days, then `withdraw`. Open claims block both the request and the finalize. A claim can be cancelled by the claimant or expired by anyone after 14 days.
 
 ## Develop

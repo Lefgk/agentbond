@@ -22,6 +22,11 @@ export const agentBondAbi = [
         "name": "claimTimeout_",
         "type": "uint64",
         "internalType": "uint64"
+      },
+      {
+        "name": "claimDeposit_",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "nonpayable"
@@ -79,6 +84,19 @@ export const agentBondAbi = [
   },
   {
     "type": "function",
+    "name": "applyArbiter",
+    "inputs": [
+      {
+        "name": "key",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "cancelClaim",
     "inputs": [
       {
@@ -107,6 +125,38 @@ export const agentBondAbi = [
     "type": "function",
     "name": "claimCount",
     "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "claimDeposit",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "claimDepositOf",
+    "inputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
     "outputs": [
       {
         "name": "",
@@ -618,6 +668,19 @@ export const agentBondAbi = [
   },
   {
     "type": "function",
+    "name": "heldClaimDeposits",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "identityRegistry",
     "inputs": [],
     "outputs": [
@@ -690,6 +753,30 @@ export const agentBondAbi = [
       }
     ],
     "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "pendingArbiter",
+    "inputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "arbiter",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "availableAt",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -926,6 +1013,44 @@ export const agentBondAbi = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "event",
+    "name": "ArbiterChangeCancelled",
+    "inputs": [
+      {
+        "name": "bondKey",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ArbiterChangeRequested",
+    "inputs": [
+      {
+        "name": "bondKey",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "newArbiter",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "availableAt",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
   },
   {
     "type": "event",
@@ -1202,6 +1327,11 @@ export const agentBondAbi = [
   },
   {
     "type": "error",
+    "name": "ArbiterCooldownActive",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "ArbiterMismatch",
     "inputs": []
   },
@@ -1274,6 +1404,11 @@ export const agentBondAbi = [
   },
   {
     "type": "error",
+    "name": "NoPendingArbiter",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NoPendingWithdraw",
     "inputs": []
   },
@@ -1290,6 +1425,11 @@ export const agentBondAbi = [
   {
     "type": "error",
     "name": "NotController",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotOwner",
     "inputs": []
   },
   {

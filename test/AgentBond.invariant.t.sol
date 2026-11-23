@@ -79,9 +79,11 @@ contract AgentBondHandler is Test {
         uint256 remaining = bond.coverageOf(c.bondKey).amount;
         uint256 cap = c.requested < remaining ? c.requested : remaining;
         uint256 slashAmount = cap == 0 ? 0 : bound(slashSeed, 0, cap);
+        uint256 dep = bond.claimDepositOf(id);
         vm.prank(arbiter);
         try bond.resolveClaim(id, slashAmount, bytes32(slashSeed)) {
             ghostSlashed += slashAmount;
+            if (slashAmount == 0) ghostDeposited += dep; // rejected: deposit forfeits into the bond
         } catch {}
     }
 
@@ -90,8 +92,11 @@ contract AgentBondHandler is Test {
         if (id == 0) return;
         AgentBond.Claim memory c = bond.getClaim(id);
         if (c.status != AgentBond.ClaimStatus.Pending) return;
+        uint256 dep = bond.claimDepositOf(id);
         vm.prank(c.claimant);
-        try bond.cancelClaim(id) {} catch {}
+        try bond.cancelClaim(id) {
+            ghostDeposited += dep; // cancelled: deposit forfeits into the bond
+        } catch {}
     }
 
     function expire(uint256 claimSeed) external {
@@ -137,6 +142,39 @@ contract AgentBondHandler is Test {
         } catch {}
     }
 
+    bool public ghostInstantSwap;
+    bool public ghostSquatted;
+
+    /// Owner queues a puppet arbiter and tries to apply it right away (must fail before the cooldown).
+    function swapArbiter(uint256 keyIdx, bool applyNow) external {
+        bytes32 key = _key(keyIdx);
+        if (bond.coverageOf(key).arbiter == address(0)) return;
+        address puppet = makeAddr("inv-puppet");
+        vm.prank(operator);
+        try bond.setArbiter(key, puppet) {} catch {}
+        (, uint64 at) = bond.pendingArbiter(key);
+        if (!applyNow || at == 0) return;
+        vm.prank(operator);
+        try bond.applyArbiter(key) {
+            if (block.timestamp < at) ghostInstantSwap = true;
+            // restore the original arbiter through the same delayed path so other actions keep working
+            vm.prank(operator);
+            bond.setArbiter(key, arbiter);
+            vm.warp(block.timestamp + bond.withdrawCooldown());
+            vm.prank(operator);
+            try bond.applyArbiter(key) {} catch {}
+        } catch {}
+    }
+
+    /// Stranger tries to create a fresh bond for someone else's account.
+    function squat(uint256 seed) external {
+        address victim = address(uint160(bound(seed, 1e6, type(uint96).max)));
+        vm.prank(stranger);
+        try bond.depositForAccount(victim, stranger, 1e6) {
+            ghostSquatted = true;
+        } catch {}
+    }
+
     function warpTime(uint256 secs) external {
         secs = bound(secs, 1, 30 days);
         vm.warp(block.timestamp + secs);
@@ -166,7 +204,7 @@ contract AgentBondInvariantTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
         registry = new MockIdentityRegistry();
-        bond = new AgentBond(address(usdc), address(registry), 7 days, 14 days);
+        bond = new AgentBond(address(usdc), address(registry), 7 days, 14 days, 1e6);
         address operator = makeAddr("inv-operator");
         uint256 agentId = registry.register(operator, "ipfs://inv-agent");
         handler = new AgentBondHandler(bond, usdc, registry, agentId);
@@ -177,6 +215,9 @@ contract AgentBondInvariantTest is Test {
         vm.prank(operator);
         usdc.approve(address(bond), type(uint256).max);
         vm.prank(handler.stranger());
+        usdc.approve(address(bond), type(uint256).max);
+        usdc.mint(handler.claimant(), 10_000_000e6);
+        vm.prank(handler.claimant());
         usdc.approve(address(bond), type(uint256).max);
 
         targetContract(address(handler));
@@ -191,7 +232,30 @@ contract AgentBondInvariantTest is Test {
         for (uint256 i; i < n; i++) {
             remaining += bond.coverageOf(handler.keys(i)).amount;
         }
-        assertEq(usdc.balanceOf(address(bond)), remaining);
+        assertEq(usdc.balanceOf(address(bond)), remaining + bond.heldClaimDeposits());
+    }
+
+    /// Audit M-3: escrowed claim deposits equal the deposits of exactly the pending claims.
+    function invariant_heldDepositsMatchPendingClaims() public view {
+        uint256 held;
+        uint256 n = bond.claimCount();
+        for (uint256 id = 1; id <= n; id++) {
+            uint256 d = bond.claimDepositOf(id);
+            if (bond.getClaim(id).status == AgentBond.ClaimStatus.Pending) assertEq(d, bond.claimDeposit());
+            else assertEq(d, 0);
+            held += d;
+        }
+        assertEq(held, bond.heldClaimDeposits());
+    }
+
+    /// Audit M-1: an arbiter change never takes effect before the cooldown.
+    function invariant_noInstantArbiterSwap() public view {
+        assertFalse(handler.ghostInstantSwap());
+    }
+
+    /// Audit M-2: a non-controller never initialises a bond.
+    function invariant_noSquat() public view {
+        assertFalse(handler.ghostSquatted());
     }
 
     function invariant_accountingHolds() public view {
