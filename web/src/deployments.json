@@ -5,9 +5,9 @@
     "registry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"
   },
   "8453": {
-    "agentBond": "",
-    "usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-    "registry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"
+    "agentBond": "0x7ef3b4c827190d6c8a66bc60a99ae7da4a49c417",
+    "registry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+    "usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
   },
   "31337": {
     "agentBond": "",
