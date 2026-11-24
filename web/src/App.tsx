@@ -1,127 +1,57 @@
 import { useMemo, useState } from "react";
-import {
-  useAccount,
-  useChainId,
-  useConnect,
-  useDisconnect,
-  usePublicClient,
-  useReadContract,
-  useSwitchChain,
-  useWriteContract,
-} from "wagmi";
+import { useAccount, useChainId, useReadContract } from "wagmi";
 import { erc20Abi, formatUnits, keccak256, parseUnits, stringToHex, type Address } from "viem";
 import { agentBondAbi, identityRegistryAbi } from "./abi";
 import { deployments } from "./config";
+import { Addr, Empty, Hint, Loading, Shell, short, useTx } from "./ui";
 
-const short = (a?: string) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "");
 const KIND = ["None", "Agent id", "Account"] as const;
 const CLAIM_STATUS = ["None", "Pending", "Slashed", "Rejected", "Cancelled", "Expired"] as const;
+const ZERO = "0x0000000000000000000000000000000000000000";
 const isAddress = (v: string) => /^0x[0-9a-fA-F]{40}$/.test(v);
 const looksLikeId = (v: string) => /^\d+$/.test(v.trim());
 
 export default function App() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
-  const { connect, connectors } = useConnect();
-  const { disconnect } = useDisconnect();
-  const { switchChain, chains } = useSwitchChain();
   const dep = deployments[chainId] ?? {};
   const [query, setQuery] = useState("");
 
   return (
-    <div className="wrap">
-      <h1>Agentbond</h1>
-      <div className="muted">
-        Public USDC surety bonds for ERC-8004 agents: post coverage, look it up, file a claim,
-        slash to a claimant, withdraw after a cooldown. Prototype — not audited. Ethereum, Base
-        and local anvil.
-      </div>
-
-      <div className="card">
-        <h2>Wallet</h2>
-        {!isConnected ? (
-          <div className="row">
-            {connectors.map((c) => (
-              <button key={c.uid} onClick={() => connect({ connector: c })}>
-                Connect {c.name}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="row">
-            <span>
-              Connected <code>{address}</code>
-            </span>
-            <button className="ghost" onClick={() => disconnect()}>
-              Disconnect
-            </button>
-          </div>
-        )}
-        <div className="row">
-          {chains.map((c) => (
-            <button
-              key={c.id}
-              className={c.id === chainId ? "" : "ghost"}
-              onClick={() => switchChain({ chainId: c.id })}
-            >
-              {c.name}
-            </button>
-          ))}
-        </div>
-        {!deployments[chainId] && (
-          <div className="warn">Unsupported chain: use Ethereum, Base or local anvil.</div>
-        )}
-        {deployments[chainId] && !dep.agentBond && (
-          <div className="warn">
-            <strong>Not deployed yet</strong> on this chain — the AgentBond address is empty. Core
-            flows stay disabled until you deploy (<code>make deploy-mainnet</code> or{" "}
-            <code>make deploy-base</code>), which writes the address into{" "}
-            <code>web/src/deployments.json</code>. You can still use the explorer after a deploy.
-          </div>
-        )}
-        {deployments[chainId]?.live && dep.agentBond && (
-          <div className="warn">
-            Live chain with real funds. This contract is NOT audited — only deposit amounts you can
-            afford to lose.
-          </div>
-        )}
-      </div>
-
+    <Shell
+      title="Agentbond"
+      tagline="Public USDC surety bonds for AI agents. An agent's owner locks USDC as a bond; anyone can look up how much coverage an agent has, file a claim against it, and a named arbiter can pay a claimant out of the bond."
+      steps={[
+        "Look up an agent by ERC-8004 id or address: coverage and slash history are public.",
+        "Owner posts a USDC bond and names an arbiter.",
+        "Anyone harmed files a claim; the arbiter rejects it or slashes the bond to the claimant.",
+        "Owner can withdraw unused bond after a cooldown.",
+      ]}
+      contractLabel="AgentBond"
+      contractOf={(id) => deployments[id]?.agentBond}
+      refs={[
+        { label: "USDC", address: dep.usdc },
+        { label: "ERC-8004 registry", address: dep.registry },
+      ]}
+      risk={
+        <>
+          <strong>Real funds.</strong> This contract is not audited. A posted bond can be paid out to claimants by the
+          arbiter you name, so only bond amounts you can afford to lose and only name an arbiter you trust.
+        </>
+      }
+    >
       {dep.agentBond && dep.usdc && (
         <>
           <Explorer agentBond={dep.agentBond} registry={dep.registry} query={query} setQuery={setQuery} />
-          {isConnected && address && (
-            <BondPage
-              agentBond={dep.agentBond}
-              usdc={dep.usdc}
-              query={query}
-              setQuery={setQuery}
-            />
+          {isConnected && address ? (
+            <BondPage agentBond={dep.agentBond} usdc={dep.usdc} query={query} setQuery={setQuery} />
+          ) : (
+            <Empty>Looking up a bond needs no wallet. Connect one to post a bond, file a claim or resolve one.</Empty>
           )}
         </>
       )}
-    </div>
+    </Shell>
   );
-}
-
-function useTx() {
-  const { writeContractAsync } = useWriteContract();
-  const client = usePublicClient();
-  const [status, setStatus] = useState("");
-  const run = async (label: string, fn: () => Promise<`0x${string}`>) => {
-    try {
-      setStatus(`${label}: confirm in wallet…`);
-      const hash = await fn();
-      setStatus(`${label}: pending ${short(hash)}`);
-      await client!.waitForTransactionReceipt({ hash });
-      setStatus(`${label}: confirmed ✓`);
-      return true;
-    } catch (e) {
-      setStatus(`${label}: ${(e as Error).message.split("\n")[0]}`);
-      return false;
-    }
-  };
-  return { writeContractAsync, status, run };
 }
 
 function useKey(agentBond: Address, query: string) {
@@ -212,22 +142,30 @@ function Explorer({
 
   return (
     <div className="card">
-      <h2>Explorer</h2>
+      <h2>1. Look up a bond</h2>
+      <p className="muted">Read-only. Enter an ERC-8004 agent id (a number) or an account address.</p>
       <div className="row">
         <label>
           Agent id or address
           <input
             value={query}
             placeholder="e.g. 22 or 0x…"
-            onChange={(e) => setQuery(e.target.value)}
+            spellCheck={false}
+            onChange={(e) => setQuery(e.target.value.trim())}
           />
         </label>
       </div>
-      {ready && !cov && <div className="muted">Looking up…</div>}
-      {cov && cov.arbiter === "0x0000000000000000000000000000000000000000" && (
-        <div className="muted">No bond posted for this identity yet.</div>
+      {!query && <Empty>Enter an agent id or address to see its bond.</Empty>}
+      {query && !ready && (
+        <div className="bad muted">Enter a whole number (agent id) or a full address (0x followed by 40 hex characters).</div>
       )}
-      {cov && cov.arbiter !== "0x0000000000000000000000000000000000000000" && (
+      {ready && !cov && <Loading>Looking up bond…</Loading>}
+      {cov && cov.arbiter === ZERO && (
+        <Empty>
+          No bond posted for {agentId !== undefined ? `agent #${agentId.toString()}` : short(account)} on this network yet.
+        </Empty>
+      )}
+      {cov && cov.arbiter !== ZERO && (
         <>
           <table>
             <tbody>
@@ -248,13 +186,13 @@ function Explorer({
               <tr>
                 <th>Arbiter</th>
                 <td>
-                  <code>{cov.arbiter}</code>
+                  <Addr value={cov.arbiter} />
                 </td>
               </tr>
               <tr>
                 <th>Operator</th>
                 <td>
-                  <code>{cov.operator}</code>
+                  <Addr value={cov.operator} />
                 </td>
               </tr>
               <tr>
@@ -274,11 +212,11 @@ function Explorer({
                 <tr>
                   <th>8004 owner / wallet</th>
                   <td>
-                    <code>{owner ? short(owner) : "—"}</code>
+                    <Addr value={owner} />
                     {wallet ? (
                       <>
                         {" "}
-                        / <code>{short(wallet)}</code>
+                        / <Addr value={wallet} />
                       </>
                     ) : null}
                   </td>
@@ -294,9 +232,9 @@ function Explorer({
               )}
             </tbody>
           </table>
-          <h2>Slash history</h2>
+          <h3>Slash history</h3>
           {!history || (history as unknown[]).length === 0 ? (
-            <div className="muted">No slashes.</div>
+            <Empty>No slashes: this bond has never paid out a claim.</Empty>
           ) : (
             <table>
               <thead>
@@ -320,7 +258,7 @@ function Explorer({
                   <tr key={s.claimId.toString()}>
                     <td>#{s.claimId.toString()}</td>
                     <td>
-                      <code>{short(s.claimant)}</code>
+                      <Addr value={s.claimant} />
                     </td>
                     <td>{formatUnits(s.amount, 6)} USDC</td>
                     <td>{new Date(Number(s.timestamp) * 1000).toLocaleString()}</td>
@@ -334,7 +272,6 @@ function Explorer({
           )}
         </>
       )}
-      {account && <div className="muted">Address key for {short(account)}</div>}
     </div>
   );
 }
@@ -350,7 +287,7 @@ function BondPage({
   query: string;
   setQuery: (v: string) => void;
 }) {
-  const { writeContractAsync, status, run } = useTx();
+  const { writeContractAsync, status, run, safe, fail } = useTx();
   const { key, agentId, account, ready } = useKey(agentBond, query);
   const [amount, setAmount] = useState("100");
   const [arbiter, setArbiter] = useState("");
@@ -368,6 +305,7 @@ function BondPage({
 
   const fileClaim = async () => {
     const dep = (claimDeposit as bigint | undefined) ?? 0n;
+    const claimAmount = parseUnits(claimAmt, 6);
     if (
       dep > 0n &&
       !(await run(`Approve ${formatUnits(dep, 6)} USDC claim deposit`, () =>
@@ -380,7 +318,7 @@ function BondPage({
         address: agentBond,
         abi: agentBondAbi,
         functionName: "fileClaim",
-        args: [key!, parseUnits(claimAmt, 6), evidence],
+        args: [key!, claimAmount, evidence],
       }),
     );
   };
@@ -393,8 +331,10 @@ function BondPage({
 
   const deposit = async () => {
     if (!identArgs) return;
+    if (arbiter && !isAddress(arbiter)) return fail("Arbiter must be a valid address (0x followed by 40 hex characters).");
     const amt = parseUnits(amount, 6);
-    const arb = (arbiter || "0x0000000000000000000000000000000000000000") as Address;
+    if (amt === 0n) return fail("Amount must be greater than 0.");
+    const arb = (arbiter || ZERO) as Address;
     if (
       await run("Approve USDC", () =>
         writeContractAsync({ address: usdc, abi: erc20Abi, functionName: "approve", args: [agentBond, amt] }),
@@ -412,36 +352,51 @@ function BondPage({
     }
   };
 
+  const tx = (label: string, functionName: "applyArbiter" | "cancelWithdraw" | "withdraw") => () =>
+    run(label, () => writeContractAsync({ address: agentBond, abi: agentBondAbi, functionName, args: [key!] }));
+  const claimTx = (label: string, functionName: "cancelClaim" | "expireClaim") => () =>
+    run(label, () => writeContractAsync({ address: agentBond, abi: agentBondAbi, functionName, args: [BigInt(claimId)] }));
+  const claimDep = (claimDeposit as bigint | undefined) ?? 0n;
+
   return (
     <div className="card">
-      <h2>Bond</h2>
-      <div className="muted">
-        Uses the identity in the explorer box above. Only the agent's owner (or the account itself)
-        can create a bond and name its arbiter; anyone may top up. Arbiter changes wait 7 days.
-        Filing a claim escrows a small USDC deposit: refunded on a slash or expiry, added to the bond
-        if the claim is rejected or cancelled.
-      </div>
+      <h2>2. Manage a bond</h2>
+      <p className="muted">
+        Acts on the identity looked up above
+        {agentId !== undefined ? ` (agent #${agentId.toString()})` : account ? ` (${short(account)})` : ""}. Only the
+        agent's owner, or the account itself, can create a bond and name its arbiter. Anyone may top up.
+      </p>
+      {!ready && <Empty>Enter an agent id or address in step 1 first. The buttons below stay disabled until then.</Empty>}
+
+      <h3>Post or top up (owner)</h3>
       <div className="row">
         <label>
           Agent id or address
-          <input value={query} placeholder="e.g. 22 or 0x…" onChange={(e) => setQuery(e.target.value)} />
+          <input value={query} placeholder="e.g. 22 or 0x…" spellCheck={false} onChange={(e) => setQuery(e.target.value.trim())} />
         </label>
         <label>
           Amount (USDC)
-          <input value={amount} onChange={(e) => setAmount(e.target.value)} />
+          <input value={amount} inputMode="decimal" onChange={(e) => setAmount(e.target.value)} />
         </label>
         <label>
           Arbiter (required on first deposit)
-          <input value={arbiter} placeholder="0x…" onChange={(e) => setArbiter(e.target.value)} />
+          <input value={arbiter} placeholder="0x…" spellCheck={false} onChange={(e) => setArbiter(e.target.value.trim())} />
         </label>
-        <button disabled={!ready} onClick={deposit}>
+        <button disabled={!ready} onClick={safe(deposit)}>
           Approve + deposit
         </button>
       </div>
+      <Hint>
+        Two wallet prompts: an approval for exactly this amount, then the deposit, which moves the USDC from your
+        wallet into the AgentBond contract as public coverage. The arbiter can pay claimants out of it. Getting it
+        back takes a withdraw request plus a cooldown.
+      </Hint>
+
+      <h3>Arbiter (owner)</h3>
       <div className="row">
         <button
           className="ghost"
-          disabled={!key || !arbiter}
+          disabled={!key || !isAddress(arbiter)}
           onClick={() =>
             run("Queue arbiter change", () =>
               writeContractAsync({
@@ -455,25 +410,20 @@ function BondPage({
         >
           Queue arbiter change
         </button>
-        <button
-          className="ghost"
-          disabled={!key}
-          onClick={() =>
-            run("Apply arbiter", () =>
-              writeContractAsync({
-                address: agentBond,
-                abi: agentBondAbi,
-                functionName: "applyArbiter",
-                args: [key!],
-              }),
-            )
-          }
-        >
+        <button className="ghost" disabled={!key} onClick={tx("Apply arbiter", "applyArbiter")}>
           Apply arbiter (after 7 days)
         </button>
+      </div>
+      <Hint>
+        Queue proposes the address in the Arbiter field above as the new arbiter. Nothing changes for 7 days, then
+        “Apply” makes it effective. No funds move.
+      </Hint>
+
+      <h3>Withdraw (owner)</h3>
+      <div className="row">
         <label>
           Withdraw amount (USDC)
-          <input value={withdrawAmt} placeholder="amount" onChange={(e) => setWithdrawAmt(e.target.value)} />
+          <input value={withdrawAmt} placeholder="amount" inputMode="decimal" onChange={(e) => setWithdrawAmt(e.target.value)} />
         </label>
         <button
           className="ghost"
@@ -491,74 +441,59 @@ function BondPage({
         >
           Request withdraw
         </button>
-        <button
-          className="ghost"
-          disabled={!key}
-          onClick={() =>
-            run("Cancel withdraw", () =>
-              writeContractAsync({
-                address: agentBond,
-                abi: agentBondAbi,
-                functionName: "cancelWithdraw",
-                args: [key!],
-              }),
-            )
-          }
-        >
-          Cancel
+        <button className="ghost" disabled={!key} onClick={tx("Cancel withdraw", "cancelWithdraw")}>
+          Cancel request
         </button>
-        <button
-          disabled={!key}
-          onClick={() =>
-            run("Withdraw", () =>
-              writeContractAsync({
-                address: agentBond,
-                abi: agentBondAbi,
-                functionName: "withdraw",
-                args: [key!],
-              }),
-            )
-          }
-        >
+        <button disabled={!key} onClick={tx("Withdraw", "withdraw")}>
           Finalize withdraw
         </button>
       </div>
+      <Hint>
+        Request starts the cooldown for that amount; it stays slashable until you finalize. Finalize sends the USDC
+        back once the cooldown has passed (the date shows in step 1 as “Pending withdraw”). Cancel keeps the bond in
+        place. Requests and withdrawals are blocked while a claim is open.
+      </Hint>
 
-      <h2>Claims</h2>
+      <h3>File a claim (anyone)</h3>
       <div className="row">
         <label>
           Claim amount (USDC)
-          <input value={claimAmt} onChange={(e) => setClaimAmt(e.target.value)} />
+          <input value={claimAmt} inputMode="decimal" onChange={(e) => setClaimAmt(e.target.value)} />
         </label>
         <label>
           Evidence URI
-          <input value={evidence} onChange={(e) => setEvidence(e.target.value)} />
+          <input value={evidence} spellCheck={false} onChange={(e) => setEvidence(e.target.value)} />
         </label>
-        <button
-          disabled={!key}
-          onClick={fileClaim}
-        >
-          Approve deposit + file claim
+        <button disabled={!key} onClick={safe(fileClaim)}>
+          {claimDep > 0n ? "Approve deposit + file claim" : "File claim"}
         </button>
       </div>
+      <Hint>
+        Files a public claim against this bond for the arbiter to decide.
+        {claimDep > 0n
+          ? ` It escrows a ${formatUnits(claimDep, 6)} USDC claim deposit from your wallet (approval, then the claim): refunded if the claim is slashed or expires, added to the bond if it is rejected or you cancel it.`
+          : " One transaction; no deposit is required."}
+      </Hint>
+
+      <h3>Resolve a claim</h3>
       <div className="row">
         <label>
           Claim id
-          <input value={claimId} placeholder="#" onChange={(e) => setClaimId(e.target.value)} />
+          <input value={claimId} placeholder="#" inputMode="numeric" onChange={(e) => setClaimId(e.target.value.trim())} />
         </label>
         <label>
-          Slash amount (0 = reject)
-          <input value={slashAmt} onChange={(e) => setSlashAmt(e.target.value)} />
+          Slash amount (USDC, 0 = reject)
+          <input value={slashAmt} inputMode="decimal" onChange={(e) => setSlashAmt(e.target.value)} />
         </label>
         <label>
-          Reason hash (optional text)
+          Reason (text, stored as a hash)
           <input value={reason} placeholder="reason" onChange={(e) => setReason(e.target.value)} />
         </label>
         <button
           className="danger"
           disabled={!claimId}
           onClick={() =>
-            run("Resolve / slash", () =>
+            run("Resolve claim", () =>
               writeContractAsync({
                 address: agentBond,
                 abi: agentBondAbi,
@@ -574,40 +509,19 @@ function BondPage({
         >
           Arbiter: resolve
         </button>
-        <button
-          className="ghost"
-          disabled={!claimId}
-          onClick={() =>
-            run("Cancel claim", () =>
-              writeContractAsync({
-                address: agentBond,
-                abi: agentBondAbi,
-                functionName: "cancelClaim",
-                args: [BigInt(claimId)],
-              }),
-            )
-          }
-        >
+        <button className="ghost" disabled={!claimId} onClick={claimTx("Cancel claim", "cancelClaim")}>
           Cancel claim
         </button>
-        <button
-          className="ghost"
-          disabled={!claimId}
-          onClick={() =>
-            run("Expire claim", () =>
-              writeContractAsync({
-                address: agentBond,
-                abi: agentBondAbi,
-                functionName: "expireClaim",
-                args: [BigInt(claimId)],
-              }),
-            )
-          }
-        >
+        <button className="ghost" disabled={!claimId} onClick={claimTx("Expire claim", "expireClaim")}>
           Expire claim
         </button>
       </div>
-      <div className="muted">{status}</div>
+      <Hint tone="danger">
+        Resolve is for the bond's arbiter only and is final: a slash amount above 0 pays that much USDC from the bond
+        to the claimant; 0 rejects the claim. Cancel is for the claimant. Expire closes a claim the arbiter never
+        decided.
+      </Hint>
+      {status}
     </div>
   );
 }
